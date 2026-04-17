@@ -46,30 +46,45 @@
     ];
 
     // ── HELPERS ─────────────────────────────────────────────────────────────────
-    async function apiCall(body) {
-      // Google Apps Script requires no-cors with form data, or a proxy approach.
-      // We use a URLSearchParams workaround to get a readable response.
-      const res = await fetch(API_URL, {
-        method: "POST",
-        body: JSON.stringify(body),
-        headers: { "Content-Type": "text/plain;charset=utf-8" },
-        mode: "cors",
-        redirect: "follow"
+    // Google Apps Script CORS workaround using JSONP-style callback
+    function apiGet() {
+      return new Promise((resolve, reject) => {
+        const cbName = "cb_" + Date.now();
+        const script = document.createElement("script");
+        window[cbName] = (data) => {
+          delete window[cbName];
+          document.body.removeChild(script);
+          resolve(data);
+        };
+        script.onerror = () => {
+          delete window[cbName];
+          document.body.removeChild(script);
+          reject(new Error("Script load failed"));
+        };
+        script.src = API_URL + "?callback=" + cbName;
+        document.body.appendChild(script);
       });
-      const text = await res.text();
-      try { return JSON.parse(text); }
-      catch(e) { return { success: false, error: "Bad response: " + text.slice(0,100) }; }
     }
 
-    async function apiGet() {
-      const res = await fetch(API_URL + "?action=load", {
-        method: "GET",
-        mode: "cors",
-        redirect: "follow"
+    function apiCall(body) {
+      return new Promise((resolve, reject) => {
+        const cbName = "cb_" + Date.now();
+        const script = document.createElement("script");
+        window[cbName] = (data) => {
+          delete window[cbName];
+          document.body.removeChild(script);
+          resolve(data);
+        };
+        script.onerror = () => {
+          delete window[cbName];
+          document.body.removeChild(script);
+          reject(new Error("Script load failed"));
+        };
+        // Encode body as base64 to pass via GET param
+        const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(body))));
+        script.src = API_URL + "?callback=" + cbName + "&payload=" + encoded;
+        document.body.appendChild(script);
       });
-      const text = await res.text();
-      try { return JSON.parse(text); }
-      catch(e) { return { success: false, error: "Bad response" }; }
     }
     function dateRange(s, e) {
       const d=[]; let c=new Date(s+"T00:00:00"); const l=new Date(e+"T00:00:00");
@@ -258,6 +273,7 @@
       const [loading,setLoading]=useState(false);
       const [apiError,setApiError]=useState(null);
 
+
       // Load live data on mount
       useEffect(()=>{
         if(!IS_LIVE)return;
@@ -350,6 +366,7 @@
               <button onClick={()=>setApiError(null)} style={{background:"none",border:"none",color:"#c0392b",cursor:"pointer",fontSize:16,lineHeight:1}}>×</button>
             </div>
           )}
+
 
           {/* Loading overlay */}
           {loading&&(
