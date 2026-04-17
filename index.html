@@ -259,7 +259,8 @@
     // ── MAIN APP ────────────────────────────────────────────────────────────────
     function App() {
       const [view,setView]=useState("coach");
-      const [requests,setRequests]=useState(SEED);
+      // Start empty — live data loads from backend on mount
+      const [requests,setRequests]=useState([]);
       const [nextId,setNextId]=useState(6);
       const [form,setForm]=useState({coach:"",location:"",start:"",end:"",reason:""});
       const [coverage,setCoverage]=useState({});
@@ -281,10 +282,12 @@
         setLoading(true);
         apiGet()
           .then(d=>{
-            if(d.success && d.requests && d.requests.length > 0) {
-              setRequests(d.requests);
+            if(d.success){
+              // Always replace with live data — empty array means no requests yet
+              setRequests(d.requests || []);
+            } else {
+              setApiError("Could not load requests: "+(d.error||"unknown"));
             }
-            // If success but empty, keep seed data — backend is connected
           })
           .catch(()=>setApiError("Could not reach backend — showing demo data."))
           .finally(()=>setLoading(false));
@@ -344,10 +347,18 @@
 
       async function handleAdminAction(id,action){
         const newStatus=action==="approve"?"approved":"denied";
+        // Optimistic UI update immediately
         setRequests(rs=>rs.map(r=>r.id===id?{...r,status:newStatus}:r));
         setJustActioned({id,action});
         setTimeout(()=>setJustActioned(null),4000);
-        if(IS_LIVE){try{await apiCall({action:action==="approve"?"approve":"deny",id});}catch(e){setApiError("Could not sync — refresh to reload.");}}
+        if(IS_LIVE){
+          try{
+            const result = await apiCall({action:action==="approve"?"approve":"deny",id});
+            if(!result.success){setApiError("Action failed: "+(result.error||"unknown error"));}
+          }catch(e){
+            setApiError("Could not reach backend — please refresh and try again.");
+          }
+        }
       }
 
       const step1Valid=form.coach&&form.location&&form.start&&form.end&&form.reason;
