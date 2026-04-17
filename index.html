@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Function Health Club — Time-Off Portal</title>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet"/>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'DM Sans', sans-serif; background: #f0f2f5; color: #1a2332; -webkit-font-smoothing: antialiased; }
+    input, select, textarea, button { font-family: 'DM Sans', sans-serif; }
+    ::-webkit-scrollbar { width: 6px; } ::-webkit-scrollbar-track { background: #f0f2f5; } ::-webkit-scrollbar-thumb { background: #dde3ea; border-radius: 3px; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo, useEffect } = React;
+
+    // ── CONFIG ──────────────────────────────────────────────────────────────────
+    const API_URL = "https://script.google.com/a/macros/functionhealthclub.com/s/AKfycbyTvQ4LH31u7ygJ0bbdEC3NXahNEDyXYYc5NUzLXHOuKFv28u3yJyNNaTDRlKuDHO86/exec";
+    const IS_LIVE = API_URL && !API_URL.includes("YOUR_APPS_SCRIPT");
+    const ADMIN_PASSWORD = "function2025";
+
+    const COACHES = ["Marissa","Devin","Matt","Jean","Amy","Lainey","Xavier","Paola","Joyce","Eric","Janina","Morgan","Caroline"];
+    const LOCATIONS = ["Vancouver","Port Coquitlam"];
+    const COVERAGE_TYPES = [
+      { id:"group", label:"Group Class",       icon:"🏋️", color:"#3d8b2f" },
+      { id:"pt",    label:"Personal Training", icon:"🤝", color:"#1e6b9e" },
+      { id:"other", label:"Open Gym / Other",  icon:"📋", color:"#b07d1a" },
+    ];
+
+    // Demo seed shown before backend connects
+    const SEED = [
+      { id:1, coach:"Marissa", location:"Vancouver", start:"2025-05-05", end:"2025-05-09", reason:"Family vacation", status:"approved", submitted:"2025-04-10",
+        coverage:{"2025-05-05":[{type:"group",time:"6:00 AM",notes:"Bootcamp",id:101},{type:"group",time:"9:00 AM",notes:"Yoga Flow",id:102}],"2025-05-06":[{type:"pt",time:"7:00 AM",notes:"Client: Sarah M.",id:103}]} },
+      { id:2, coach:"Devin", location:"Port Coquitlam", start:"2025-05-12", end:"2025-05-16", reason:"Personal", status:"approved", submitted:"2025-04-11",
+        coverage:{"2025-05-12":[{type:"group",time:"5:30 AM",notes:"HIIT",id:104}],"2025-05-13":[{type:"pt",time:"8:00 AM",notes:"Client: Tom R.",id:105}]} },
+      { id:3, coach:"Matt", location:"Vancouver", start:"2025-06-02", end:"2025-06-06", reason:"Vacation", status:"approved", submitted:"2025-04-12", coverage:{} },
+      { id:4, coach:"Amy", location:"Vancouver", start:"2025-05-19", end:"2025-05-23", reason:"Conference", status:"pending", submitted:"2025-04-13", coverage:{} },
+      { id:5, coach:"Xavier", location:"Port Coquitlam", start:"2025-06-09", end:"2025-06-13", reason:"Wedding", status:"pending", submitted:"2025-04-14", coverage:{} },
+    ];
+
+    // ── HELPERS ─────────────────────────────────────────────────────────────────
+    async function apiCall(body) {
+      // Google Apps Script requires no-cors with form data, or a proxy approach.
+      // We use a URLSearchParams workaround to get a readable response.
+      const res = await fetch(API_URL, {
+        method: "POST",
+        body: JSON.stringify(body),
+        headers: { "Content-Type": "text/plain;charset=utf-8" },
+        mode: "cors",
+        redirect: "follow"
+      });
+      const text = await res.text();
+      try { return JSON.parse(text); }
+      catch(e) { return { success: false, error: "Bad response: " + text.slice(0,100) }; }
+    }
+
+    async function apiGet() {
+      const res = await fetch(API_URL + "?action=load", {
+        method: "GET",
+        mode: "cors",
+        redirect: "follow"
+      });
+      const text = await res.text();
+      try { return JSON.parse(text); }
+      catch(e) { return { success: false, error: "Bad response" }; }
+    }
+    function dateRange(s, e) {
+      const d=[]; let c=new Date(s+"T00:00:00"); const l=new Date(e+"T00:00:00");
+      while(c<=l){d.push(c.toISOString().slice(0,10));c=new Date(c.getTime()+86400000);}
+      return d;
+    }
+    function overlaps(a,b){ return a.start<=b.end && a.end>=b.start; }
+    function fmt(d){ if(!d)return""; const[,m,dy]=d.split("-"); return `${["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][+m-1]} ${+dy}`; }
+    function fmtFull(d){ if(!d)return""; const[y,m,dy]=d.split("-"); return `${["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][+m-1]} ${+dy}, ${y}`; }
+    function dow(d){ return ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][new Date(d+"T00:00:00").getDay()]; }
+    function totalCov(cov){ return Object.values(cov||{}).reduce((s,a)=>s+a.length,0); }
+    function sColor(s){ return s==="approved"?"#2e7d32":s==="pending"?"#b07d1a":s==="special_request"?"#9b3a7d":"#c0392b"; }
+    function sBg(s){ return s==="approved"?"#f0faf0":s==="pending"?"#fdf8ee":s==="special_request"?"#fdf0f9":"#fdf2f0"; }
+    function sLabel(s){ return s==="approved"?"✓ Approved":s==="denied"?"✗ Declined":s==="special_request"?"⚑ Special Request":"⏳ Pending"; }
+
+    // ── SHARED STYLES ───────────────────────────────────────────────────────────
+    const S = {
+      input:  { background:"#fff", border:"1px solid #dde3ea", borderRadius:8, color:"#1a2332", padding:"10px 13px", fontSize:13, outline:"none", width:"100%", fontFamily:"inherit" },
+      label:  { fontSize:11, fontWeight:700, letterSpacing:"0.07em", textTransform:"uppercase", color:"#7a8a9a", marginBottom:5, display:"block" },
+      btnGreen: { background:"#4caf35", color:"#fff", border:"none", borderRadius:9, padding:"12px 24px", fontSize:13, fontWeight:700, cursor:"pointer", fontFamily:"inherit", transition:"background 0.15s" },
+      card:   { background:"#fff", border:"1px solid #e8edf2", borderRadius:14, padding:24, boxShadow:"0 1px 6px rgba(0,0,0,0.05)" },
+    };
+
+    // ── LOGO ────────────────────────────────────────────────────────────────────
+    function Logo({ sm }) {
+      const sz = sm ? 36 : 44;
+      return (
+        <div style={{display:"flex",alignItems:"center",gap:11}}>
+          <div style={{width:sz,height:sz,borderRadius:"50%",background:"#1a2332",display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0}}>
+            <svg width="22" height="17" viewBox="0 0 22 17" fill="none">
+              <rect x="0" y="6.5" width="22" height="4" rx="2" fill="#4caf35"/>
+              <rect x="3.5" y="1.5" width="4" height="14" rx="2" fill="#4caf35"/>
+              <rect x="14.5" y="1.5" width="4" height="14" rx="2" fill="#4caf35"/>
+              <rect x="7.5" y="4.5" width="7" height="8" rx="1.5" fill="none" stroke="#4caf35" strokeWidth="1.8"/>
+            </svg>
+          </div>
+          <div>
+            <div style={{fontSize:sm?13:15,fontWeight:800,color:"#1a2332",letterSpacing:"-0.01em",lineHeight:1.1}}>
+              Function <span style={{color:"#4caf35"}}>Health Club</span>
+            </div>
+            {!sm && <div style={{fontSize:10,color:"#9aabb8",letterSpacing:"0.1em",textTransform:"uppercase",marginTop:1}}>Coach Time-Off Portal</div>}
+          </div>
+        </div>
+      );
+    }
+
+    // ── CALENDAR ────────────────────────────────────────────────────────────────
+    function Calendar({ year, month, blockedDates, conflictDates, selectedStart, selectedEnd, onDayClick }) {
+      const firstDay = new Date(year,month,1).getDay();
+      const daysInMonth = new Date(year,month+1,0).getDate();
+      const monthName = new Date(year,month).toLocaleString("default",{month:"long"});
+      const days=[]; for(let i=0;i<firstDay;i++)days.push(null); for(let i=1;i<=daysInMonth;i++)days.push(i);
+      const today = new Date().toISOString().slice(0,10);
+      return (
+        <div>
+          <div style={{textAlign:"center",fontWeight:700,fontSize:12,letterSpacing:"0.08em",textTransform:"uppercase",color:"#7a8a9a",marginBottom:10}}>{monthName} {year}</div>
+          <div style={{display:"grid",gridTemplateColumns:"repeat(7,1fr)",gap:2,textAlign:"center"}}>
+            {["Su","Mo","Tu","We","Th","Fr","Sa"].map(d=><div key={d} style={{fontSize:9,color:"#b0bec8",fontWeight:700,padding:"2px 0"}}>{d}</div>)}
+            {days.map((d,i)=>{
+              if(!d) return <div key={"e"+i}/>;
+              const ds=`${year}-${String(month+1).padStart(2,"0")}-${String(d).padStart(2,"0")}`;
+              const isBlocked=blockedDates.includes(ds), isConflict=conflictDates?.includes(ds);
+              const isStart=ds===selectedStart, isEnd=ds===selectedEnd;
+              const inRange=selectedStart&&selectedEnd&&ds>selectedStart&&ds<selectedEnd;
+              const isPast=ds<today;
+              let bg="transparent",color=isPast?"#c8d0d8":"#2d3e50",cursor=isPast?"default":"pointer",br="1px solid transparent",fw=400;
+              if(isBlocked){bg="#e8f5e4";color="#3d8b2f";br="1px solid #b8ddb0";}
+              if(isConflict){bg="#fdf0f9";color="#9b3a7d";br="1px solid #e0b0d5";}
+              if(inRange){bg="#eef6ff";color="#1e6b9e";}
+              if(isStart||isEnd){bg="#4caf35";color="#fff";br="1px solid #3d9428";fw=700;}
+              return (
+                <div key={ds} onClick={()=>!isPast&&onDayClick&&onDayClick(ds)}
+                  style={{padding:"5px 1px",borderRadius:5,fontSize:11,fontWeight:fw,background:bg,color,border:br,cursor,position:"relative"}}>
+                  {d}
+                  {isBlocked&&!isConflict&&!isStart&&!isEnd&&(
+                    <span style={{position:"absolute",bottom:1,left:"50%",transform:"translateX(-50%)",width:3,height:3,borderRadius:"50%",background:"#3d8b2f",display:"block"}}/>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      );
+    }
+
+    // ── DAY COVERAGE EDITOR ─────────────────────────────────────────────────────
+    function DayCovEditor({ date, items, onChange }) {
+      const [open,setOpen]=useState(true);
+      function add(type){ onChange([...items,{type,time:"",notes:"",id:Date.now()+Math.random()}]); }
+      function upd(idx,f,v){ const n=[...items]; n[idx]={...n[idx],[f]:v}; onChange(n); }
+      function rem(idx){ onChange(items.filter((_,i)=>i!==idx)); }
+      const byType={}; items.forEach(it=>{byType[it.type]=(byType[it.type]||0)+1;});
+      return (
+        <div style={{border:"1px solid #e8edf2",borderRadius:10,overflow:"hidden",marginBottom:8}}>
+          <div onClick={()=>setOpen(o=>!o)} style={{background:"#f7f9fb",padding:"10px 14px",display:"flex",alignItems:"center",justifyContent:"space-between",cursor:"pointer",userSelect:"none",borderBottom:open?"1px solid #e8edf2":"none"}}>
+            <div style={{display:"flex",alignItems:"center",gap:10,flexWrap:"wrap"}}>
+              <span style={{fontWeight:700,fontSize:12,color:"#1a2332"}}>{dow(date)}</span>
+              <span style={{fontSize:11,color:"#7a8a9a"}}>{fmtFull(date)}</span>
+              {COVERAGE_TYPES.map(ct=>byType[ct.id]>0&&<span key={ct.id} style={{fontSize:10,background:ct.color+"18",border:`1px solid ${ct.color}40`,borderRadius:4,padding:"1px 7px",color:ct.color,fontWeight:700}}>{ct.icon} {byType[ct.id]}</span>)}
+              {items.length===0&&<span style={{fontSize:10,color:"#b0bec8",fontStyle:"italic"}}>No coverage added</span>}
+            </div>
+            <span style={{color:"#b0bec8",fontSize:10}}>{open?"▲":"▼"}</span>
+          </div>
+          {open&&(
+            <div style={{background:"#fafbfc",padding:"12px 14px"}}>
+              {items.map((item,idx)=>{
+                const ct=COVERAGE_TYPES.find(c=>c.id===item.type)||COVERAGE_TYPES[0];
+                return (
+                  <div key={item.id||idx} style={{background:"#fff",border:`1px solid ${ct.color}28`,borderRadius:9,padding:"10px 12px",marginBottom:8}}>
+                    <div style={{display:"grid",gridTemplateColumns:"26px 1fr 1fr 26px",gap:8,alignItems:"center",marginBottom:7}}>
+                      <span style={{fontSize:13,textAlign:"center"}}>{ct.icon}</span>
+                      <select value={item.type} onChange={e=>upd(idx,"type",e.target.value)} style={{...S.input,fontSize:12,padding:"6px 8px",color:ct.color,fontWeight:600}}>
+                        {COVERAGE_TYPES.map(c=><option key={c.id} value={c.id}>{c.label}</option>)}
+                      </select>
+                      <input value={item.time} onChange={e=>upd(idx,"time",e.target.value)} placeholder="Time (e.g. 6:00 AM)" style={{...S.input,fontSize:12,padding:"6px 8px"}}/>
+                      <button onClick={()=>rem(idx)} style={{background:"#fdecea",border:"1px solid #f5c0bc",borderRadius:6,color:"#c0392b",width:26,height:26,cursor:"pointer",fontSize:13,padding:0}}>×</button>
+                    </div>
+                    <div style={{display:"grid",gridTemplateColumns:"26px 1fr",gap:8}}>
+                      <div/>
+                      <input value={item.notes} onChange={e=>upd(idx,"notes",e.target.value)} placeholder="Class name, client name, notes…" style={{...S.input,fontSize:12,padding:"6px 8px"}}/>
+                    </div>
+                  </div>
+                );
+              })}
+              <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                {COVERAGE_TYPES.map(ct=>(
+                  <button key={ct.id} onClick={()=>add(ct.id)} style={{background:ct.color+"12",border:`1px solid ${ct.color}35`,borderRadius:7,padding:"6px 12px",fontSize:11,fontWeight:700,color:ct.color,cursor:"pointer"}}>
+                    + {ct.icon} {ct.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ── COVERAGE SUMMARY (admin) ────────────────────────────────────────────────
+    function CovSummary({ coverage }) {
+      const [open,setOpen]=useState(false);
+      const total=totalCov(coverage);
+      if(!coverage||total===0) return <span style={{fontSize:11,color:"#b0bec8",fontStyle:"italic"}}>No coverage details logged</span>;
+      return (
+        <div>
+          <button onClick={e=>{e.stopPropagation();setOpen(o=>!o);}} style={{background:"#f0f7fe",border:"1px solid #c8dff5",borderRadius:6,padding:"4px 10px",fontSize:11,color:"#1e6b9e",cursor:"pointer",fontWeight:700}}>
+            📋 {total} coverage item{total!==1?"s":""} {open?"▲":"▼"}
+          </button>
+          {open&&(
+            <div style={{marginTop:8}}>
+              {Object.entries(coverage).sort(([a],[b])=>a.localeCompare(b)).map(([date,items])=>(
+                <div key={date} style={{background:"#f7f9fb",border:"1px solid #e8edf2",borderRadius:8,padding:"8px 12px",marginBottom:6}}>
+                  <div style={{fontSize:10,fontWeight:700,color:"#7a8a9a",marginBottom:5,textTransform:"uppercase",letterSpacing:"0.07em"}}>{dow(date)} · {fmtFull(date)}</div>
+                  {items.map((it,i)=>{
+                    const ct=COVERAGE_TYPES.find(c=>c.id===it.type)||COVERAGE_TYPES[0];
+                    return (
+                      <div key={i} style={{display:"flex",alignItems:"center",gap:8,fontSize:12,marginBottom:3,paddingLeft:4}}>
+                        <span>{ct.icon}</span>
+                        <span style={{color:ct.color,fontWeight:700,fontSize:11,minWidth:115}}>{ct.label}</span>
+                        {it.time&&<span style={{color:"#7a8a9a",fontSize:11}}>{it.time}</span>}
+                        {it.notes&&<span style={{color:"#4a5a6a"}}>— {it.notes}</span>}
+                      </div>
+                    );
+                  })}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // ── MAIN APP ────────────────────────────────────────────────────────────────
+    function App() {
+      const [view,setView]=useState("coach");
+      const [requests,setRequests]=useState(SEED);
+      const [nextId,setNextId]=useState(6);
+      const [form,setForm]=useState({coach:"",location:"",start:"",end:"",reason:""});
+      const [coverage,setCoverage]=useState({});
+      const [submitted,setSubmitted]=useState(null);
+      const [step,setStep]=useState(1);
+      const [calMonth,setCalMonth]=useState({year:new Date().getFullYear(),month:new Date().getMonth()});
+      const [adminPass,setAdminPass]=useState("");
+      const [adminAuthed,setAdminAuthed]=useState(false);
+      const [adminFilter,setAdminFilter]=useState("all");
+      const [justActioned,setJustActioned]=useState(null);
+      const [loading,setLoading]=useState(false);
+      const [apiError,setApiError]=useState(null);
+
+      // Load live data on mount
+      useEffect(()=>{
+        if(!IS_LIVE)return;
+        setLoading(true);
+        apiGet()
+          .then(d=>{
+            if(d.success && d.requests && d.requests.length > 0) {
+              setRequests(d.requests);
+            }
+            // If success but empty, keep seed data — backend is connected
+          })
+          .catch(()=>setApiError("Could not reach backend — showing demo data."))
+          .finally(()=>setLoading(false));
+      },[]);
+
+      const approvedReqs=requests.filter(r=>r.status==="approved");
+
+      const blockedDates=useMemo(()=>{
+        const d=[];
+        approvedReqs.forEach(r=>{if(!form.location||r.location===form.location)dateRange(r.start,r.end).forEach(x=>d.push(x));});
+        return [...new Set(d)];
+      },[approvedReqs,form.location]);
+
+      const conflictReqs=useMemo(()=>{
+        if(!form.start||!form.end||!form.location)return[];
+        return approvedReqs.filter(r=>r.location===form.location&&overlaps(r,form));
+      },[approvedReqs,form]);
+
+      const conflictDates=useMemo(()=>{
+        const d=[];conflictReqs.forEach(r=>dateRange(r.start,r.end).forEach(x=>d.push(x)));return[...new Set(d)];
+      },[conflictReqs]);
+
+      const reqDays=useMemo(()=>form.start&&form.end?dateRange(form.start,form.end):[],[form.start,form.end]);
+
+      useMemo(()=>{
+        if(!form.start||!form.end)return;
+        const days=dateRange(form.start,form.end);
+        setCoverage(prev=>{const next={};days.forEach(d=>{next[d]=prev[d]||[];});return next;});
+      },[form.start,form.end]);
+
+      function handleDayClick(ds){
+        if(!form.start||(form.start&&form.end)){setForm(f=>({...f,start:ds,end:""}));}
+        else{ds<form.start?setForm(f=>({...f,start:ds,end:f.start})):setForm(f=>({...f,end:ds}));}
+      }
+
+      async function handleSubmit(){
+        if(!form.coach||!form.location||!form.start||!form.end||!form.reason)return;
+        const isSpecial=conflictReqs.length>0;
+        const payload={action:"submit",...form,isSpecial,coverage};
+        if(IS_LIVE){
+          setLoading(true);
+          try{
+            const res=await apiCall(payload);
+            if(res.success){
+              const nr={id:res.id,...form,status:res.status,submitted:new Date().toISOString().slice(0,10),coverage};
+              setRequests(r=>[...r,nr]);setSubmitted({...nr,isSpecial});
+              setForm({coach:"",location:"",start:"",end:"",reason:""});setCoverage({});setStep(1);
+            }
+          }catch(e){setApiError("Submission failed — please try again.");}
+          finally{setLoading(false);}
+        } else {
+          const nr={id:nextId,...form,status:isSpecial?"special_request":"pending",submitted:new Date().toISOString().slice(0,10),coverage};
+          setRequests(r=>[...r,nr]);setNextId(n=>n+1);setSubmitted({...nr,isSpecial});
+          setForm({coach:"",location:"",start:"",end:"",reason:""});setCoverage({});setStep(1);
+        }
+      }
+
+      async function handleAdminAction(id,action){
+        const newStatus=action==="approve"?"approved":"denied";
+        setRequests(rs=>rs.map(r=>r.id===id?{...r,status:newStatus}:r));
+        setJustActioned({id,action});
+        setTimeout(()=>setJustActioned(null),4000);
+        if(IS_LIVE){try{await apiCall({action:action==="approve"?"approve":"deny",id});}catch(e){setApiError("Could not sync — refresh to reload.");}}
+      }
+
+      const step1Valid=form.coach&&form.location&&form.start&&form.end&&form.reason;
+      const hasConflict=conflictReqs.length>0;
+      const pendingCount=requests.filter(r=>r.status==="pending"||r.status==="special_request").length;
+      const specialCount=requests.filter(r=>r.status==="special_request").length;
+      const filteredAdmin=requests.filter(r=>adminFilter==="all"||r.status===adminFilter)
+        .sort((a,b)=>{const p={special_request:0,pending:1,approved:2,denied:3};return(p[a.status]??4)-(p[b.status]??4)||b.id-a.id;});
+
+      return (
+        <div style={{minHeight:"100vh",background:"#f0f2f5"}}>
+
+          {/* Error banner */}
+          {apiError&&(
+            <div style={{background:"#fdf2f0",borderBottom:"2px solid #f5c0bc",padding:"10px 24px",fontSize:12,color:"#c0392b",display:"flex",justifyContent:"space-between",alignItems:"center"}}>
+              <span>⚠ {apiError}</span>
+              <button onClick={()=>setApiError(null)} style={{background:"none",border:"none",color:"#c0392b",cursor:"pointer",fontSize:16,lineHeight:1}}>×</button>
+            </div>
+          )}
+
+          {/* Loading overlay */}
+          {loading&&(
+            <div style={{position:"fixed",inset:0,background:"rgba(240,242,245,0.8)",zIndex:999,display:"flex",alignItems:"center",justifyContent:"center"}}>
+              <div style={{background:"#fff",borderRadius:16,padding:"28px 40px",boxShadow:"0 4px 24px rgba(0,0,0,0.12)",textAlign:"center"}}>
+                <div style={{fontSize:32,marginBottom:10}}>⏳</div>
+                <div style={{fontSize:15,fontWeight:700,color:"#1a2332"}}>Just a moment…</div>
+              </div>
+            </div>
+          )}
+
+          {/* ── HEADER ── */}
+          <div style={{background:"#fff",borderBottom:"1px solid #e8edf2",padding:"0 24px",display:"flex",alignItems:"center",justifyContent:"space-between",height:64,boxShadow:"0 1px 4px rgba(0,0,0,0.06)",position:"sticky",top:0,zIndex:100}}>
+            <Logo/>
+            <div style={{display:"flex",gap:8}}>
+              {[["coach","✋ Submit Request"],["admin","⚙ Admin"]].map(([v,l])=>(
+                <button key={v} onClick={()=>setView(v)} style={{background:view===v?"#4caf35":"transparent",border:`1.5px solid ${view===v?"#4caf35":"#dde3ea"}`,borderRadius:8,padding:"8px 16px",fontSize:12,fontWeight:700,color:view===v?"#fff":"#7a8a9a",cursor:"pointer",position:"relative",fontFamily:"inherit"}}>
+                  {l}
+                  {v==="admin"&&pendingCount>0&&(
+                    <span style={{position:"absolute",top:-7,right:-7,background:"#e53935",color:"#fff",borderRadius:"50%",width:19,height:19,fontSize:10,fontWeight:800,display:"flex",alignItems:"center",justifyContent:"center"}}>{pendingCount}</span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* ══════════ COACH VIEW ══════════ */}
+          {view==="coach"&&(
+            <div style={{maxWidth:1020,margin:"0 auto",padding:"24px 20px",display:"grid",gridTemplateColumns:"1.25fr 0.75fr",gap:20,alignItems:"start"}}>
+
+              {/* LEFT */}
+              <div style={{display:"flex",flexDirection:"column",gap:16}}>
+
+                {/* Steps */}
+                <div style={{display:"flex",background:"#fff",border:"1px solid #e8edf2",borderRadius:12,overflow:"hidden"}}>
+                  {[["1","Request Details",""],["2","Coverage Handover",reqDays.length>0?`${reqDays.length} day${reqDays.length!==1?"s":""}`:""]]
+                    .map(([n,label,sub],i)=>{
+                      const active=step===i+1,done=step>i+1;
+                      return (
+                        <div key={n} onClick={()=>done&&setStep(i+1)} style={{flex:1,padding:"13px 18px",display:"flex",alignItems:"center",gap:10,background:active?"#f7fdf5":"#fff",cursor:done?"pointer":"default",borderRight:i===0?"1px solid #e8edf2":"none"}}>
+                          <div style={{width:24,height:24,borderRadius:"50%",background:active?"#4caf35":done?"#2e7d32":"#eef1f5",border:`2px solid ${active?"#4caf35":done?"#2e7d32":"#dde3ea"}`,display:"flex",alignItems:"center",justifyContent:"center",fontSize:10,fontWeight:800,color:active||done?"#fff":"#b0bec8",flexShrink:0}}>
+                            {done?"✓":n}
+                          </div>
+                          <div>
+                            <div style={{fontSize:12,fontWeight:700,color:active?"#1a2332":done?"#4a5a6a":"#b0bec8"}}>{label}</div>
+                            {sub&&<div style={{fontSize:10,color:"#9aabb8"}}>{sub}</div>}
+                          </div>
+                        </div>
+                      );
+                    })}
+                </div>
+
+                {/* Success banner */}
+                {submitted&&(
+                  <div style={{background:submitted.isSpecial?"#fdf0f9":"#f0fdf4",border:`1.5px solid ${submitted.isSpecial?"#d0a0c8":"#a8dfb0"}`,borderRadius:14,padding:20}}>
+                    <div style={{display:"flex",gap:14,alignItems:"flex-start"}}>
+                      <div style={{fontSize:26,lineHeight:1,flexShrink:0}}>{submitted.isSpecial?"⚑":"✅"}</div>
+                      <div style={{flex:1}}>
+                        <div style={{fontWeight:800,fontSize:15,color:submitted.isSpecial?"#7a2060":"#2e7d32",marginBottom:6}}>
+                          {submitted.isSpecial?"Request Submitted — Management Review Required":"Time-Off Request Submitted"}
+                        </div>
+                        {submitted.isSpecial?(
+                          <div style={{fontSize:13,color:"#5a3050",lineHeight:1.65}}>
+                            Your dates overlap with approved time off at <strong>{submitted.location}</strong>. Your request has been flagged as a <strong>Special Request</strong> and sent to management. <strong>Do not make any travel or personal arrangements until you hear back from your manager.</strong>
+                          </div>
+                        ):(
+                          <div style={{fontSize:13,color:"#2a4a2a",lineHeight:1.65}}>
+                            Your request for <strong>{fmt(submitted.start)} – {fmt(submitted.end)}</strong> at <strong>{submitted.location}</strong> is pending manager approval.
+                            {totalCov(submitted.coverage)>0
+                              ?<span> You've logged <strong>{totalCov(submitted.coverage)} coverage item{totalCov(submitted.coverage)!==1?"s":""}</strong> — thank you for being proactive.</span>
+                              :<span> If you have classes or sessions to hand over, please contact your manager.</span>}
+                          </div>
+                        )}
+                        <div style={{marginTop:10,fontSize:12,color:submitted.isSpecial?"#9a6080":"#5a8a5a"}}>Management has been notified. You'll hear back shortly.</div>
+                      </div>
+                    </div>
+                    <button onClick={()=>setSubmitted(null)} style={{marginTop:14,fontSize:11,color:"#9aabb8",background:"none",border:"none",cursor:"pointer",padding:0}}>Dismiss</button>
+                  </div>
+                )}
+
+                {/* STEP 1 */}
+                {step===1&&(
+                  <div style={{...S.card}}>
+                    <div style={{fontSize:15,fontWeight:800,marginBottom:20,color:"#1a2332",display:"flex",alignItems:"center",gap:8}}>
+                      <span style={{background:"#f0fdf4",border:"1px solid #b8ddb0",borderRadius:7,padding:"3px 10px",fontSize:11,color:"#2e7d32",fontWeight:700}}>Step 1 of 2</span>
+                      Request Details
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:14}}>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+                        <div>
+                          <label style={S.label}>Your Name</label>
+                          <select value={form.coach} onChange={e=>setForm(f=>({...f,coach:e.target.value}))} style={S.input}>
+                            <option value="">Select your name…</option>
+                            {COACHES.map(c=><option key={c}>{c}</option>)}
+                          </select>
+                        </div>
+                        <div>
+                          <label style={S.label}>Location</label>
+                          <select value={form.location} onChange={e=>setForm(f=>({...f,location:e.target.value}))} style={S.input}>
+                            <option value="">Select location…</option>
+                            {LOCATIONS.map(l=><option key={l}>{l}</option>)}
+                          </select>
+                        </div>
+                      </div>
+                      <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:14}}>
+                        <div><label style={S.label}>Start Date</label><input type="date" value={form.start} onChange={e=>setForm(f=>({...f,start:e.target.value}))} style={S.input}/></div>
+                        <div><label style={S.label}>End Date</label><input type="date" value={form.end} onChange={e=>setForm(f=>({...f,end:e.target.value}))} style={S.input}/></div>
+                      </div>
+                      <div>
+                        <label style={S.label}>Reason for Request</label>
+                        <textarea value={form.reason} onChange={e=>setForm(f=>({...f,reason:e.target.value}))} rows={2} placeholder="Vacation, personal, medical, conference…" style={{...S.input,resize:"none"}}/>
+                      </div>
+
+                      {/* Conflict warning */}
+                      {hasConflict&&(
+                        <div style={{background:"#fdf0f9",border:"1.5px solid #d0a0c8",borderRadius:10,padding:16}}>
+                          <div style={{display:"flex",gap:10,alignItems:"flex-start"}}>
+                            <span style={{fontSize:20,flexShrink:0}}>⚑</span>
+                            <div>
+                              <div style={{fontWeight:700,fontSize:13,color:"#7a2060",marginBottom:6}}>Date Overlap Detected</div>
+                              <div style={{fontSize:12,color:"#5a3050",lineHeight:1.6,marginBottom:8}}>These dates overlap with approved time off from:</div>
+                              {conflictReqs.map(r=>(
+                                <div key={r.id} style={{fontSize:12,color:"#5a3050",marginBottom:4,paddingLeft:8,borderLeft:"3px solid #d0a0c8"}}>
+                                  <strong>{r.coach}</strong> — {fmt(r.start)} to {fmt(r.end)} at {r.location}
+                                </div>
+                              ))}
+                              <div style={{fontSize:12,color:"#7a5070",marginTop:10,lineHeight:1.6}}>
+                                You can still submit. Your request will be flagged as a <strong>Special Request</strong> and sent to management for review. <strong>Do not make any arrangements until you hear back from your manager.</strong>
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      <button disabled={!step1Valid} onClick={()=>setStep(2)} style={{...S.btnGreen,opacity:step1Valid?1:0.35}}>
+                        Next: Coverage Handover →
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* STEP 2 */}
+                {step===2&&(
+                  <div style={{...S.card}}>
+                    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+                      <div style={{fontSize:15,fontWeight:800,color:"#1a2332",display:"flex",alignItems:"center",gap:8}}>
+                        <span style={{background:"#f0fdf4",border:"1px solid #b8ddb0",borderRadius:7,padding:"3px 10px",fontSize:11,color:"#2e7d32",fontWeight:700}}>Step 2 of 2</span>
+                        Coverage Handover
+                      </div>
+                      <button onClick={()=>setStep(1)} style={{fontSize:11,color:"#9aabb8",background:"none",border:"none",cursor:"pointer",fontWeight:600}}>← Back</button>
+                    </div>
+                    <div style={{background:"#fffbf0",border:"1px solid #f5d78a",borderRadius:9,padding:"11px 14px",marginBottom:16,marginTop:8,fontSize:12,color:"#7a5a00",lineHeight:1.6}}>
+                      <strong>Please document all classes, PT sessions, and responsibilities that need coverage.</strong> While optional, incomplete handovers may affect approval. This helps management coordinate coverage efficiently.
+                    </div>
+                    <div style={{maxHeight:400,overflowY:"auto",paddingRight:2}}>
+                      {reqDays.map(d=><DayCovEditor key={d} date={d} items={coverage[d]||[]} onChange={items=>setCoverage(c=>({...c,[d]:items}))}/>)}
+                    </div>
+                    <div style={{marginTop:16,paddingTop:14,borderTop:"1px solid #e8edf2"}}>
+                      {totalCov(coverage)>0
+                        ?<div style={{fontSize:12,color:"#2e7d32",fontWeight:600,marginBottom:14}}>✓ {totalCov(coverage)} coverage item{totalCov(coverage)!==1?"s":""} documented</div>
+                        :<div style={{fontSize:12,color:"#b0bec8",marginBottom:14}}>No coverage added — you may still submit.</div>}
+                      <button onClick={handleSubmit} style={{...S.btnGreen,width:"100%"}}>
+                        {hasConflict?"⚑  Submit as Special Request":"Submit Time-Off Request →"}
+                      </button>
+                      <div style={{fontSize:11,color:"#b0bec8",textAlign:"center",marginTop:8}}>Management will be notified immediately</div>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* RIGHT — Calendar */}
+              <div style={{...S.card,position:"sticky",top:76}}>
+                <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16}}>
+                  <div style={{fontSize:13,fontWeight:800,color:"#1a2332"}}>Availability</div>
+                  <div style={{display:"flex",gap:5}}>
+                    {[["‹",-1],["›",1]].map(([l,d])=>(
+                      <button key={l} onClick={()=>setCalMonth(m=>{let mo=m.month+d,yr=m.year;if(mo<0){mo=11;yr--;}if(mo>11){mo=0;yr++;}return{year:yr,month:mo};})} style={{background:"#f2f4f7",border:"1px solid #dde3ea",borderRadius:6,color:"#7a8a9a",width:26,height:26,cursor:"pointer",fontSize:13,fontWeight:700,fontFamily:"inherit"}}>
+                        {l}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <Calendar year={calMonth.year} month={calMonth.month} blockedDates={blockedDates} conflictDates={conflictDates} selectedStart={form.start} selectedEnd={form.end} onDayClick={handleDayClick}/>
+                <div style={{marginTop:12,display:"flex",flexWrap:"wrap",gap:"6px 14px"}}>
+                  {[["#4caf35","Your selection"],["#e8f5e4","Approved — taken"],["#fdf0f9","Overlap conflict"]].map(([c,l])=>(
+                    <div key={l} style={{display:"flex",alignItems:"center",gap:5,fontSize:10,color:"#9aabb8"}}>
+                      <div style={{width:9,height:9,borderRadius:2,background:c,border:"1px solid #dde3ea"}}/>
+                      {l}
+                    </div>
+                  ))}
+                </div>
+
+                {form.location&&(
+                  <div style={{marginTop:16,borderTop:"1px solid #e8edf2",paddingTop:14}}>
+                    <div style={{fontSize:10,color:"#b0bec8",textTransform:"uppercase",letterSpacing:"0.1em",fontWeight:700,marginBottom:10}}>{form.location} — Approved</div>
+                    {approvedReqs.filter(r=>r.location===form.location).length===0
+                      ?<div style={{fontSize:11,color:"#dde3ea"}}>No approved requests yet.</div>
+                      :approvedReqs.filter(r=>r.location===form.location).map(r=>(
+                        <div key={r.id} style={{fontSize:12,marginBottom:7,display:"flex",justifyContent:"space-between",paddingBottom:7,borderBottom:"1px solid #f2f4f7"}}>
+                          <div>
+                            <div style={{color:"#3d8b2f",fontWeight:700}}>{r.coach}</div>
+                            {totalCov(r.coverage)>0&&<div style={{fontSize:10,color:"#9aabb8"}}>📋 {totalCov(r.coverage)} items</div>}
+                          </div>
+                          <div style={{textAlign:"right",fontSize:11,color:"#9aabb8"}}>{fmt(r.start)}–{fmt(r.end)}</div>
+                        </div>
+                      ))}
+                  </div>
+                )}
+
+                <div style={{marginTop:16,background:"#f7fdf5",border:"1px solid #c8e6c0",borderRadius:9,padding:"10px 13px"}}>
+                  <div style={{fontSize:11,fontWeight:700,color:"#2e7d32",marginBottom:3}}>📌 First Come, First Served</div>
+                  <div style={{fontSize:11,color:"#5a8a5a",lineHeight:1.5}}>Approved dates are locked. Overlapping requests require manager override and are not guaranteed.</div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* ══════════ ADMIN VIEW ══════════ */}
+          {view==="admin"&&(
+            <div style={{maxWidth:920,margin:"0 auto",padding:"24px 20px"}}>
+              {!adminAuthed?(
+                <div style={{...S.card,maxWidth:380,margin:"40px auto",textAlign:"center",padding:32}}>
+                  <div style={{marginBottom:20,display:"flex",justifyContent:"center"}}><Logo sm/></div>
+                  <div style={{fontSize:18,fontWeight:800,marginBottom:4}}>Manager Access</div>
+                  <div style={{fontSize:12,color:"#9aabb8",marginBottom:22}}>Enter your password to review and action time-off requests.</div>
+                  <input type="password" placeholder="Password" value={adminPass}
+                    onChange={e=>setAdminPass(e.target.value)}
+                    onKeyDown={e=>e.key==="Enter"&&adminPass===ADMIN_PASSWORD&&setAdminAuthed(true)}
+                    style={{...S.input,marginBottom:14,textAlign:"center"}}/>
+                  <button onClick={()=>adminPass===ADMIN_PASSWORD&&setAdminAuthed(true)} style={{...S.btnGreen,width:"100%"}}>Sign In →</button>
+                </div>
+              ):(
+                <>
+                  {/* Stats */}
+                  <div style={{display:"grid",gridTemplateColumns:"repeat(4,1fr)",gap:14,marginBottom:22}}>
+                    {[
+                      {label:"Total",val:requests.length,color:"#1e6b9e",bg:"#f0f7fe"},
+                      {label:"Pending Review",val:requests.filter(r=>r.status==="pending").length,color:"#b07d1a",bg:"#fffbf0"},
+                      {label:"Special Requests",val:specialCount,color:"#9b3a7d",bg:"#fdf0f9"},
+                      {label:"Approved",val:requests.filter(r=>r.status==="approved").length,color:"#2e7d32",bg:"#f0fdf4"},
+                    ].map(({label,val,color,bg})=>(
+                      <div key={label} style={{background:bg,border:`1px solid ${color}22`,borderRadius:12,padding:"14px 18px"}}>
+                        <div style={{fontSize:28,fontWeight:800,color,lineHeight:1}}>{val}</div>
+                        <div style={{fontSize:11,color:"#9aabb8",marginTop:4,fontWeight:600}}>{label}</div>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Toast */}
+                  {justActioned&&(
+                    <div style={{background:justActioned.action==="approve"?"#f0fdf4":"#fdf2f0",border:`1px solid ${justActioned.action==="approve"?"#a8dfb0":"#f5c0bc"}`,borderRadius:10,padding:"12px 16px",marginBottom:16,fontSize:13,fontWeight:600,color:justActioned.action==="approve"?"#2e7d32":"#c0392b"}}>
+                      {justActioned.action==="approve"?"✓ Approved — coach notification sent.":"✗ Declined — coach notification sent."}
+                    </div>
+                  )}
+
+                  {/* Filters */}
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:16,flexWrap:"wrap",gap:10}}>
+                    <div style={{fontSize:16,fontWeight:800}}>Time-Off Requests</div>
+                    <div style={{display:"flex",gap:6,flexWrap:"wrap"}}>
+                      {[["all","All"],["special_request","⚑ Special"],["pending","Pending"],["approved","Approved"],["denied","Declined"]].map(([f,l])=>(
+                        <button key={f} onClick={()=>setAdminFilter(f)} style={{background:adminFilter===f?"#4caf35":"#fff",border:`1px solid ${adminFilter===f?"#4caf35":"#dde3ea"}`,borderRadius:7,padding:"6px 12px",fontSize:11,fontWeight:700,color:adminFilter===f?"#fff":"#7a8a9a",cursor:"pointer",fontFamily:"inherit"}}>
+                          {l} <span style={{marginLeft:4,background:adminFilter===f?"#3d9428":"#f2f4f7",borderRadius:4,padding:"1px 5px",fontSize:10,color:adminFilter===f?"#fff":"#9aabb8"}}>{requests.filter(r=>f==="all"||r.status===f).length}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Cards */}
+                  <div style={{display:"flex",flexDirection:"column",gap:10}}>
+                    {filteredAdmin.length===0&&<div style={{color:"#b0bec8",textAlign:"center",padding:40}}>No requests in this category.</div>}
+                    {filteredAdmin.map(r=>{
+                      const isSpecial=r.status==="special_request";
+                      const isPending=r.status==="pending"||isSpecial;
+                      return (
+                        <div key={r.id} style={{...S.card,borderLeft:`4px solid ${sColor(r.status)}`,padding:"18px 22px",background:isSpecial?"#fefbff":"#fff"}}>
+                          {isSpecial&&(
+                            <div style={{background:"#fdf0f9",border:"1px solid #d0a0c8",borderRadius:8,padding:"9px 13px",marginBottom:14,fontSize:12,color:"#7a2060",display:"flex",alignItems:"center",gap:8}}>
+                              <span style={{fontSize:16}}>⚑</span>
+                              <span><strong>Special Request — Manager Override Required.</strong> Dates overlap with an existing approved request. Review carefully before actioning.</span>
+                            </div>
+                          )}
+                          <div style={{display:"flex",alignItems:"flex-start",gap:14}}>
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:6,flexWrap:"wrap"}}>
+                                <span style={{fontWeight:800,fontSize:15}}>{r.coach}</span>
+                                <span style={{fontSize:11,background:"#f0f7fe",border:"1px solid #c8dff5",borderRadius:5,padding:"2px 8px",color:"#1e6b9e",fontWeight:700}}>{r.location}</span>
+                                <span style={{fontSize:11,background:sBg(r.status),border:`1px solid ${sColor(r.status)}33`,borderRadius:5,padding:"2px 8px",color:sColor(r.status),fontWeight:700}}>{sLabel(r.status)}</span>
+                              </div>
+                              <div style={{fontSize:13,color:"#4a5a6a",marginBottom:4}}>
+                                <span style={{fontWeight:700}}>{fmtFull(r.start)} – {fmtFull(r.end)}</span>
+                                <span style={{marginLeft:10,color:"#9aabb8"}}>· {r.reason}</span>
+                              </div>
+                              <div style={{fontSize:11,color:"#b0bec8",marginBottom:10}}>Submitted {fmtFull(r.submitted)}</div>
+                              <CovSummary coverage={r.coverage}/>
+                            </div>
+                            <div style={{display:"flex",flexDirection:"column",gap:8,flexShrink:0,minWidth:120}}>
+                              {isPending&&(
+                                <>
+                                  <button onClick={()=>handleAdminAction(r.id,"approve")} style={{background:"#4caf35",border:"none",borderRadius:8,color:"#fff",padding:"9px 16px",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>✓ Approve</button>
+                                  <button onClick={()=>handleAdminAction(r.id,"deny")} style={{background:"#fff",border:"2px solid #e0d0d0",borderRadius:8,color:"#c0392b",padding:"8px 16px",fontSize:13,fontWeight:700,cursor:"pointer",fontFamily:"inherit"}}>✗ Decline</button>
+                                </>
+                              )}
+                              {r.status==="approved"&&<div style={{fontSize:13,color:"#2e7d32",fontWeight:700,textAlign:"right"}}>✓ Approved</div>}
+                              {r.status==="denied"&&<div style={{fontSize:13,color:"#c0392b",fontWeight:700,textAlign:"right"}}>✗ Declined</div>}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
+
+          {/* Footer */}
+          <div style={{borderTop:"1px solid #e8edf2",padding:"14px 24px",marginTop:40,display:"flex",alignItems:"center",justifyContent:"space-between",background:"#fff"}}>
+            <span style={{fontSize:11,color:"#b0bec8"}}>Function Health Club · Coach Time-Off Portal</span>
+            <span style={{fontSize:11,color:"#dde3ea"}}>Vancouver & Port Coquitlam</span>
+          </div>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+  </script>
+</body>
+</html>
