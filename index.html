@@ -272,6 +272,7 @@
       const [justActioned,setJustActioned]=useState(null);
       const [loading,setLoading]=useState(false);
       const [apiError,setApiError]=useState(null);
+      const [diagLog,setDiagLog]=useState(null);
 
 
       // Load live data on mount
@@ -683,9 +684,30 @@
           )}
 
           {/* Footer */}
-          <div style={{borderTop:"1px solid #e8edf2",padding:"14px 24px",marginTop:40,display:"flex",alignItems:"center",justifyContent:"space-between",background:"#fff"}}>
-            <span style={{fontSize:11,color:"#b0bec8"}}>Function Health Club · Coach Time-Off Portal</span>
-            <span style={{fontSize:11,color:"#dde3ea"}}>Vancouver & Port Coquitlam</span>
+          <div style={{borderTop:"1px solid #e8edf2",padding:"14px 24px",marginTop:40,background:"#fff"}}>
+            <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:diagLog?"12px":"0"}}>
+              <span style={{fontSize:11,color:"#b0bec8"}}>Function Health Club · Coach Time-Off Portal</span>
+              <button onClick={async()=>{
+                setDiagLog("Running...");
+                try {
+                  const result = await apiGet();
+                  setDiagLog("SUCCESS: " + JSON.stringify(result).slice(0,300));
+                } catch(err) {
+                  setDiagLog("FAILED: " + err.message);
+                  // Also try direct script tag and show URL
+                  setDiagLog(prev => prev + "\nAPI_URL: " + API_URL);
+                }
+              }} style={{fontSize:10,color:"#9aabb8",background:"#f7f9fb",border:"1px solid #e8edf2",borderRadius:5,padding:"4px 10px",cursor:"pointer",fontFamily:"inherit"}}>
+                🔧 Connection Test
+              </button>
+            </div>
+            {diagLog&&(
+              <div style={{background:"#1a2332",color:"#4caf35",padding:"12px",borderRadius:8,fontSize:11,fontFamily:"monospace",whiteSpace:"pre-wrap",wordBreak:"break-all",lineHeight:1.6}}>
+                <div style={{color:"#9aabb8",marginBottom:4,fontSize:10}}>DIAGNOSTIC OUTPUT:</div>
+                {diagLog}
+                <button onClick={()=>setDiagLog(null)} style={{marginTop:8,display:"block",background:"none",border:"1px solid #4caf35",color:"#4caf35",cursor:"pointer",padding:"2px 8px",fontSize:10,borderRadius:4}}>clear</button>
+              </div>
+            )}
           </div>
         </div>
       );
